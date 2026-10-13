@@ -1,0 +1,795 @@
+<div id='loading'>Entering light tunnel</div>
+
+<style is:global>
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #020105;
+  }
+
+  body {
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      'Segoe UI', sans-serif;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    z-index: 10;
+    color: rgba(255, 255, 255, 0.64);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    background: #020105;
+    transition: opacity 500ms ease;
+    pointer-events: none;
+  }
+
+  #loading.is-hidden {
+    opacity: 0;
+  }
+
+  .lil-gui.root {
+    --background-color: rgba(11, 8, 18, 0.9);
+    --widget-color: rgba(255, 255, 255, 0.08);
+    --hover-color: rgba(255, 255, 255, 0.13);
+    --focus-color: rgba(255, 255, 255, 0.17);
+    --text-color: rgba(255, 255, 255, 0.88);
+    --number-color: #ffb35c;
+    --string-color: #ff72c7;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+</style>
+
+<script>
+  import {
+    ACESFilmicToneMapping,
+    AdditiveBlending,
+    BufferGeometry,
+    CanvasTexture,
+    CatmullRomCurve3,
+    Color,
+    DoubleSide,
+    Float32BufferAttribute,
+    Group,
+    MathUtils,
+    Matrix4,
+    Mesh,
+    PerspectiveCamera,
+    Points,
+    PointsMaterial,
+    Quaternion,
+    Scene,
+    ShaderMaterial,
+    Sprite,
+    SpriteMaterial,
+    SRGBColorSpace,
+    Timer,
+    Vector2,
+    Vector3,
+    WebGLRenderer,
+  } from 'three';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import GUI from 'lil-gui';
+
+  const TAU = Math.PI * 2;
+  const loading = document.querySelector<HTMLElement>('#loading');
+
+  let progress = 0.018;
+  let cameraOrientationReady = false;
+
+  const pointerTarget = new Vector2();
+  const pointerSmooth = new Vector2();
+
+  const params = {
+    flightSpeed: 30,
+    mouseInfluence: 0.51,
+    fieldOfView: 89,
+    tunnelRadius: 14.4,
+    openingSize: 57,
+    ribbonCount: 150,
+    ribbonWidth: 0.16,
+    lightIntensity: 0.78,
+    pulseSpeed: 0.49,
+    bloomStrength: 0.59,
+    bloomRadius: 0.72,
+    bloomThreshold: 0.18,
+    starBrightness: 0.83,
+    starDensity: 7400,
+    lineColor1: '#ff8a00',
+    lineColor2: '#fff0be',
+    lineColor3: '#ff5ea8',
+    lineColor4: '#2c7fff',
+    dpr: 2,
+    paused: false,
+    resetView: () => {
+      progress = 0.018;
+      pointerTarget.set(0, 0);
+      pointerSmooth.set(0, 0);
+      cameraOrientationReady = false;
+    },
+  };
+
+  const scene = new Scene();
+  scene.background = new Color(0x020105);
+
+  const camera = new PerspectiveCamera(
+    params.fieldOfView,
+    window.innerWidth / window.innerHeight,
+    0.06,
+    1800,
+  );
+
+  const renderer = new WebGLRenderer({
+    antialias: true,
+    alpha: false,
+    powerPreference: 'high-performance',
+  });
+
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(params.dpr);
+  renderer.outputColorSpace = SRGBColorSpace;
+  renderer.toneMapping = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.08;
+  document.body.appendChild(renderer.domElement);
+
+  const composer = new EffectComposer(renderer);
+  const renderPass = new RenderPass(scene, camera);
+  const bloomPass = new UnrealBloomPass(
+    new Vector2(window.innerWidth, window.innerHeight),
+    params.bloomStrength,
+    params.bloomRadius,
+    params.bloomThreshold,
+  );
+
+  composer.addPass(renderPass);
+  composer.addPass(bloomPass);
+
+  const world = new Group();
+  scene.add(world);
+
+  const pathPoints: Vector3[] = [];
+  const pathPointCount = 18;
+
+  for (let i = 0; i < pathPointCount; i += 1) {
+    const a = (i / pathPointCount) * TAU;
+    const radius = 72 + Math.sin(a * 3.0) * 12 + Math.cos(a * 5.0) * 5;
+
+    pathPoints.push(
+      new Vector3(
+        Math.cos(a) * radius,
+        Math.sin(a * 2.0) * 16 + Math.cos(a * 4.0) * 4,
+        Math.sin(a) * radius,
+      ),
+    );
+  }
+
+  const flightPath = new CatmullRomCurve3(pathPoints, true, 'centripetal', 0.45);
+  flightPath.arcLengthDivisions = 3000;
+
+  const tunnelSegments = 620;
+  const pathLength = flightPath.getLength();
+  const frames = flightPath.computeFrenetFrames(tunnelSegments, true);
+  const pathSamples = Array.from({ length: tunnelSegments + 1 }, (_, index) =>
+    flightPath.getPointAt(index / tunnelSegments),
+  );
+
+  const ribbonPalette = [
+    new Color(params.lineColor1),
+    new Color(params.lineColor2),
+    new Color(params.lineColor3),
+    new Color(params.lineColor4),
+  ];
+
+  function syncRibbonPalette() {
+    ribbonPalette[0].set(params.lineColor1);
+    ribbonPalette[1].set(params.lineColor2);
+    ribbonPalette[2].set(params.lineColor3);
+    ribbonPalette[3].set(params.lineColor4);
+  }
+
+  const tunnelGroup = new Group();
+  world.add(tunnelGroup);
+
+  let tunnelMesh: Mesh<BufferGeometry, ShaderMaterial> | null = null;
+  let tunnelMaterial: ShaderMaterial | null = null;
+  let sparkField: Points<BufferGeometry, PointsMaterial> | null = null;
+  let starField: Points<BufferGeometry, ShaderMaterial> | null = null;
+  let glowSprites: Group | null = null;
+
+  function mulberry32(seed: number) {
+    return function random() {
+      let value = (seed += 0x6d2b79f5);
+      value = Math.imul(value ^ (value >>> 15), value | 1);
+      value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function createRibbonGeometry() {
+    const random = mulberry32(9137);
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const sides: number[] = [];
+    const pathCoordinates: number[] = [];
+    const phases: number[] = [];
+    const indices: number[] = [];
+
+    const gap = MathUtils.degToRad(params.openingSize);
+    const availableArc = TAU - gap;
+    const gapHalf = gap * 0.5;
+    const lineCount = Math.round(params.ribbonCount);
+
+    for (let ribbonIndex = 0; ribbonIndex < lineCount; ribbonIndex += 1) {
+      const lane = (ribbonIndex + 0.32 + random() * 0.36) / lineCount;
+      const baseAngle = gapHalf + lane * availableArc;
+      const radius = params.tunnelRadius * (0.84 + random() * 0.32);
+      const width = params.ribbonWidth * (0.35 + Math.pow(random(), 1.7) * 2.65);
+      const waveAmplitude = (random() - 0.5) * 0.16;
+      const waveFrequency = 1 + Math.floor(random() * 4);
+      const wavePhase = random() * TAU;
+      const pulsePhase = random() * 30;
+      const color = ribbonPalette[Math.floor(random() * ribbonPalette.length)].clone();
+      const colorBoost = 0.72 + random() * 0.55;
+      color.multiplyScalar(colorBoost);
+
+      for (let segmentIndex = 0; segmentIndex <= tunnelSegments; segmentIndex += 1) {
+        const u = segmentIndex / tunnelSegments;
+        const center = pathSamples[segmentIndex];
+        const normal = frames.normals[segmentIndex];
+        const binormal = frames.binormals[segmentIndex];
+        const angle =
+          baseAngle + Math.sin(u * TAU * waveFrequency + wavePhase) * waveAmplitude;
+
+        const radial = new Vector3()
+          .copy(binormal)
+          .multiplyScalar(Math.cos(angle))
+          .addScaledVector(normal, Math.sin(angle));
+
+        const lateral = new Vector3()
+          .copy(binormal)
+          .multiplyScalar(-Math.sin(angle))
+          .addScaledVector(normal, Math.cos(angle));
+
+        const ripple = 1 + Math.sin(u * TAU * (2 + waveFrequency) + wavePhase) * 0.015;
+        const ribbonCenter = new Vector3()
+          .copy(center)
+          .addScaledVector(radial, radius * ripple);
+
+        for (let sideIndex = 0; sideIndex < 2; sideIndex += 1) {
+          const side = sideIndex === 0 ? -1 : 1;
+          const vertex = new Vector3()
+            .copy(ribbonCenter)
+            .addScaledVector(lateral, width * 0.5 * side);
+
+          positions.push(vertex.x, vertex.y, vertex.z);
+          colors.push(color.r, color.g, color.b);
+          sides.push(side);
+          pathCoordinates.push(u);
+          phases.push(pulsePhase);
+        }
+      }
+
+      const ribbonVertexOffset = ribbonIndex * (tunnelSegments + 1) * 2;
+
+      for (let segmentIndex = 0; segmentIndex < tunnelSegments; segmentIndex += 1) {
+        const a = ribbonVertexOffset + segmentIndex * 2;
+        const b = a + 1;
+        const c = a + 2;
+        const d = a + 3;
+        indices.push(a, c, b, c, d, b);
+      }
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+    geometry.setAttribute('aSide', new Float32BufferAttribute(sides, 1));
+    geometry.setAttribute('aPath', new Float32BufferAttribute(pathCoordinates, 1));
+    geometry.setAttribute('aPhase', new Float32BufferAttribute(phases, 1));
+    geometry.setIndex(indices);
+    geometry.computeBoundingSphere();
+
+    return geometry;
+  }
+
+  function createTunnelMaterial() {
+    return new ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: params.lightIntensity },
+        uPulseSpeed: { value: params.pulseSpeed },
+      },
+      vertexShader: `
+        attribute float aSide;
+        attribute float aPath;
+        attribute float aPhase;
+        varying vec3 vColor;
+        varying float vSide;
+        varying float vPath;
+        varying float vPhase;
+
+        void main() {
+          vColor = color;
+          vSide = aSide;
+          vPath = aPath;
+          vPhase = aPhase;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uPulseSpeed;
+        varying vec3 vColor;
+        varying float vSide;
+        varying float vPath;
+        varying float vPhase;
+
+        void main() {
+          float center = pow(max(0.0, 1.0 - abs(vSide)), 2.2);
+          float halo = pow(max(0.0, 1.0 - abs(vSide)), 0.48);
+          float finePulse = 0.82 + 0.18 * sin(vPath * 1450.0 - uTime * 8.0 * uPulseSpeed + vPhase);
+          float longPulse = 0.78 + 0.22 * sin(vPath * 82.0 - uTime * 2.4 * uPulseSpeed + vPhase * 0.37);
+          float energy = mix(0.22, 1.0, center) * finePulse * longPulse;
+          vec3 color = vColor * uIntensity * (0.5 + energy * 1.35);
+          float alpha = (halo * 0.24 + center * 0.78) * (0.74 + energy * 0.26);
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      vertexColors: true,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      side: DoubleSide,
+      toneMapped: false,
+    });
+  }
+
+  function rebuildTunnel() {
+    if (tunnelMesh) {
+      tunnelGroup.remove(tunnelMesh);
+      tunnelMesh.geometry.dispose();
+      tunnelMesh.material.dispose();
+    }
+
+    tunnelMaterial = createTunnelMaterial();
+    tunnelMesh = new Mesh(createRibbonGeometry(), tunnelMaterial);
+    tunnelMesh.frustumCulled = false;
+    tunnelGroup.add(tunnelMesh);
+
+    rebuildSparks();
+  }
+
+  function rebuildSparks() {
+    if (sparkField) {
+      tunnelGroup.remove(sparkField);
+      sparkField.geometry.dispose();
+      sparkField.material.dispose();
+    }
+
+    const random = mulberry32(4412);
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const sparkCount = 1500;
+
+    for (let i = 0; i < sparkCount; i += 1) {
+      const u = random();
+      const sampleIndex = Math.min(tunnelSegments, Math.floor(u * tunnelSegments));
+      const center = pathSamples[sampleIndex];
+      const normal = frames.normals[sampleIndex];
+      const binormal = frames.binormals[sampleIndex];
+      const angle = random() * TAU;
+      const radius = params.tunnelRadius * (0.12 + Math.pow(random(), 0.48) * 0.75);
+      const point = new Vector3()
+        .copy(center)
+        .addScaledVector(binormal, Math.cos(angle) * radius)
+        .addScaledVector(normal, Math.sin(angle) * radius);
+
+      const color = ribbonPalette[Math.floor(random() * ribbonPalette.length)].clone();
+      color.lerp(new Color(0xffffff), 0.55 + random() * 0.35);
+
+      positions.push(point.x, point.y, point.z);
+      colors.push(color.r, color.g, color.b);
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
+
+    const material = new PointsMaterial({
+      size: 0.075,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.75,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+      toneMapped: false,
+    });
+
+    sparkField = new Points(geometry, material);
+    sparkField.frustumCulled = false;
+    tunnelGroup.add(sparkField);
+  }
+
+  function createStarMaterial() {
+    return new ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uPixelRatio: { value: params.dpr },
+        uBrightness: { value: params.starBrightness },
+      },
+      vertexShader: `
+        uniform float uTime;
+        uniform float uPixelRatio;
+        attribute float aSize;
+        attribute float aPhase;
+        varying float vTwinkle;
+
+        void main() {
+          vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+          float distanceScale = 620.0 / max(80.0, -viewPosition.z);
+          gl_PointSize = clamp(aSize * uPixelRatio * distanceScale, 0.7, 5.5);
+          gl_Position = projectionMatrix * viewPosition;
+          vTwinkle = 0.72 + 0.28 * sin(uTime * 1.5 + aPhase);
+        }
+      `,
+      fragmentShader: `
+        uniform float uBrightness;
+        varying float vTwinkle;
+
+        void main() {
+          vec2 point = gl_PointCoord - 0.5;
+          float distanceToCenter = length(point);
+          float core = smoothstep(0.5, 0.0, distanceToCenter);
+          float sparkle = pow(core, 3.0) + pow(core, 12.0) * 1.8;
+          gl_FragColor = vec4(vec3(uBrightness * vTwinkle * sparkle), core);
+        }
+      `,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    });
+  }
+
+  function rebuildStars() {
+    if (starField) {
+      world.remove(starField);
+      starField.geometry.dispose();
+      starField.material.dispose();
+    }
+
+    const random = mulberry32(7821);
+    const positions: number[] = [];
+    const sizes: number[] = [];
+    const phases: number[] = [];
+    const count = Math.round(params.starDensity);
+
+    for (let i = 0; i < count; i += 1) {
+      const z = random() * 2 - 1;
+      const angle = random() * TAU;
+      const radiusOnSphere = Math.sqrt(1 - z * z);
+      const distance = 260 + Math.pow(random(), 0.42) * 850;
+
+      positions.push(
+        Math.cos(angle) * radiusOnSphere * distance,
+        z * distance,
+        Math.sin(angle) * radiusOnSphere * distance,
+      );
+
+      sizes.push(0.45 + Math.pow(random(), 4.0) * 3.9);
+      phases.push(random() * TAU);
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('aSize', new Float32BufferAttribute(sizes, 1));
+    geometry.setAttribute('aPhase', new Float32BufferAttribute(phases, 1));
+
+    starField = new Points(geometry, createStarMaterial());
+    starField.frustumCulled = false;
+    world.add(starField);
+  }
+
+  function createGlowTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    if (!context) return texture;
+
+    const gradient = context.createRadialGradient(128, 128, 0, 128, 128, 128);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');
+    gradient.addColorStop(0.08, 'rgba(255,238,190,0.95)');
+    gradient.addColorStop(0.22, 'rgba(255,156,50,0.55)');
+    gradient.addColorStop(0.48, 'rgba(255,74,180,0.12)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 256, 256);
+
+    return texture;
+  }
+
+  function buildGlowSprites() {
+    if (glowSprites) {
+      world.remove(glowSprites);
+    }
+
+    const group = new Group();
+    const texture = createGlowTexture();
+    const positions: Vector3[] = [
+      new Vector3(210, 48, -330),
+      new Vector3(-310, -70, 230),
+      new Vector3(120, 180, 390),
+      new Vector3(-430, 120, -110),
+    ];
+
+    positions.forEach((position, index) => {
+      const material = new SpriteMaterial({
+        map: texture,
+        color: index % 2 === 0 ? 0xffb23b : 0xff64c7,
+        transparent: true,
+        opacity: 0.62,
+        blending: AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      });
+
+      const sprite = new Sprite(material);
+      sprite.position.copy(position);
+      const size = index === 0 ? 48 : 28 + index * 5;
+      sprite.scale.set(size, size, 1);
+      group.add(sprite);
+    });
+
+    glowSprites = group;
+    world.add(glowSprites);
+  }
+
+  window.addEventListener('pointermove', (event) => {
+    pointerTarget.set(
+      (event.clientX / window.innerWidth) * 2 - 1,
+      -((event.clientY / window.innerHeight) * 2 - 1),
+    );
+  });
+
+  window.addEventListener('pointerleave', () => {
+    pointerTarget.set(0, 0);
+  });
+
+  const currentPosition = new Vector3();
+  const lookTarget = new Vector3();
+  const desiredUp = new Vector3();
+  const lateralOffset = new Vector3();
+  const pathTangent = new Vector3();
+  const pathNormal = new Vector3();
+  const pathBinormal = new Vector3();
+  const desiredQuaternion = new Quaternion();
+  const lookMatrix = new Matrix4();
+
+  function samplePathFrame(u: number) {
+    const wrapped = ((u % 1) + 1) % 1;
+    const scaledIndex = wrapped * tunnelSegments;
+    const indexA = Math.floor(scaledIndex);
+    const indexB = Math.min(tunnelSegments, indexA + 1);
+    const interpolation = scaledIndex - indexA;
+
+    flightPath.getTangentAt(wrapped, pathTangent).normalize();
+    pathNormal
+      .copy(frames.normals[indexA])
+      .lerp(frames.normals[indexB], interpolation)
+      .addScaledVector(pathTangent, -pathNormal.dot(pathTangent))
+      .normalize();
+    pathBinormal.crossVectors(pathTangent, pathNormal).normalize();
+  }
+
+  function updateCamera(delta: number) {
+    if (!params.paused) {
+      progress = (progress + (params.flightSpeed / pathLength) * delta) % 1;
+    }
+
+    pointerSmooth.x = MathUtils.damp(pointerSmooth.x, pointerTarget.x, 2.8, delta);
+    pointerSmooth.y = MathUtils.damp(pointerSmooth.y, pointerTarget.y, 2.8, delta);
+
+    samplePathFrame(progress);
+    const lookAhead = (progress + 7.2 / pathLength) % 1;
+
+    flightPath.getPointAt(progress, currentPosition);
+    lateralOffset
+      .copy(pathBinormal)
+      .multiplyScalar(pointerSmooth.x * params.mouseInfluence)
+      .addScaledVector(pathNormal, pointerSmooth.y * params.mouseInfluence * 0.68);
+    currentPosition.add(lateralOffset);
+
+    flightPath.getPointAt(lookAhead, lookTarget);
+    lookTarget
+      .addScaledVector(pathBinormal, pointerSmooth.x * params.mouseInfluence * 0.24)
+      .addScaledVector(pathNormal, pointerSmooth.y * params.mouseInfluence * 0.15);
+
+    const roll = -pointerSmooth.x * 0.16;
+    desiredUp
+      .copy(pathNormal)
+      .multiplyScalar(Math.cos(roll))
+      .addScaledVector(pathBinormal, Math.sin(roll))
+      .normalize();
+
+    camera.position.copy(currentPosition);
+    lookMatrix.lookAt(currentPosition, lookTarget, desiredUp);
+    desiredQuaternion.setFromRotationMatrix(lookMatrix);
+
+    if (!cameraOrientationReady) {
+      camera.quaternion.copy(desiredQuaternion);
+      cameraOrientationReady = true;
+    } else {
+      const orientationBlend = 1 - Math.exp(-4.2 * delta);
+      camera.quaternion.slerp(desiredQuaternion, orientationBlend);
+    }
+
+    const dynamicFov = params.fieldOfView + Math.min(6, params.flightSpeed * 0.07);
+    camera.fov = MathUtils.damp(camera.fov, dynamicFov, 3.5, delta);
+    camera.updateProjectionMatrix();
+  }
+
+  const gui = new GUI({ title: 'Setting' });
+
+  const flightFolder = gui.addFolder('Flight');
+  flightFolder.add(params, 'flightSpeed', 0, 85, 0.1).name('Speed');
+  flightFolder.add(params, 'mouseInfluence', 0, 3, 0.01).name('Mouse Influence');
+  flightFolder.add(params, 'fieldOfView', 50, 105, 1).name('Field of View');
+  flightFolder.add(params, 'paused').name('Pause');
+  flightFolder.add(params, 'resetView').name('Reset View');
+
+  const tunnelFolder = gui.addFolder('Tunnel');
+  tunnelFolder
+    .add(params, 'tunnelRadius', 5, 18, 0.1)
+    .name('Radius')
+    .onFinishChange(rebuildTunnel);
+  tunnelFolder
+    .add(params, 'openingSize', 35, 190, 1)
+    .name('Open Side')
+    .onFinishChange(rebuildTunnel);
+  tunnelFolder
+    .add(params, 'ribbonCount', 28, 300, 1)
+    .name('Light Strips')
+    .onFinishChange(rebuildTunnel);
+  tunnelFolder
+    .add(params, 'ribbonWidth', 0.03, 0.42, 0.01)
+    .name('Strip Width')
+    .onFinishChange(rebuildTunnel);
+
+  const colorsFolder = gui.addFolder('Line Colors');
+  const rebuildColors = () => {
+    syncRibbonPalette();
+    rebuildTunnel();
+  };
+  colorsFolder.addColor(params, 'lineColor1').name('Color 1').onFinishChange(rebuildColors);
+  colorsFolder.addColor(params, 'lineColor2').name('Color 2').onFinishChange(rebuildColors);
+  colorsFolder.addColor(params, 'lineColor3').name('Color 3').onFinishChange(rebuildColors);
+  colorsFolder.addColor(params, 'lineColor4').name('Color 4').onFinishChange(rebuildColors);
+
+  const lightFolder = gui.addFolder('Light');
+  lightFolder
+    .add(params, 'lightIntensity', 0.2, 5, 0.01)
+    .name('Intensity')
+    .onChange((value: number) => {
+      if (tunnelMaterial) tunnelMaterial.uniforms.uIntensity.value = value;
+    });
+  lightFolder
+    .add(params, 'pulseSpeed', 0, 2, 0.01)
+    .name('Pulse Speed')
+    .onChange((value: number) => {
+      if (tunnelMaterial) tunnelMaterial.uniforms.uPulseSpeed.value = value;
+    });
+  lightFolder
+    .add(params, 'bloomStrength', 0, 3.5, 0.01)
+    .name('Bloom Strength')
+    .onChange((value: number) => {
+      bloomPass.strength = value;
+    });
+  lightFolder
+    .add(params, 'bloomRadius', 0, 1, 0.01)
+    .name('Bloom Radius')
+    .onChange((value: number) => {
+      bloomPass.radius = value;
+    });
+  lightFolder
+    .add(params, 'bloomThreshold', 0, 1, 0.01)
+    .name('Bloom Threshold')
+    .onChange((value: number) => {
+      bloomPass.threshold = value;
+    });
+
+  const starsFolder = gui.addFolder('Stars');
+  starsFolder
+    .add(params, 'starBrightness', 0.1, 2.5, 0.01)
+    .name('Brightness')
+    .onChange((value: number) => {
+      if (starField) starField.material.uniforms.uBrightness.value = value;
+    });
+  starsFolder
+    .add(params, 'starDensity', 1000, 14000, 100)
+    .name('Density')
+    .onFinishChange(rebuildStars);
+
+  const renderingFolder = gui.addFolder('Rendering');
+  renderingFolder
+    .add(params, 'dpr', 0.5, 2, 0.25)
+    .name('DPR')
+    .onChange((value: number) => {
+      renderer.setPixelRatio(value);
+      composer.setPixelRatio(value);
+      if (starField) starField.material.uniforms.uPixelRatio.value = value;
+    });
+
+  flightFolder.open();
+  gui.close();
+
+  function resize() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+    composer.setSize(width, height);
+  }
+
+  window.addEventListener('resize', resize);
+
+  rebuildTunnel();
+  rebuildStars();
+  buildGlowSprites();
+  resize();
+
+  const timer = new Timer();
+  let firstFrame = true;
+
+  renderer.setAnimationLoop(() => {
+    timer.update();
+    const delta = Math.min(timer.getDelta(), 0.05);
+    const elapsed = timer.getElapsed();
+
+    updateCamera(delta);
+
+    if (tunnelMaterial) {
+      tunnelMaterial.uniforms.uTime.value = elapsed;
+    }
+
+    if (starField) {
+      starField.material.uniforms.uTime.value = elapsed;
+    }
+
+    composer.render();
+
+    if (firstFrame) {
+      firstFrame = false;
+      requestAnimationFrame(() => loading?.classList.add('is-hidden'));
+    }
+  });
+</script>
